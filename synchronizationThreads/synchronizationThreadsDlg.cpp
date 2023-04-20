@@ -71,59 +71,33 @@ BEGIN_MESSAGE_MAP(CsynchronizationThreadsDlg, CDialogEx)
 	ON_EN_CHANGE(IDC_EDIT1, &CsynchronizationThreadsDlg::OnEnChangeEdit1)
 END_MESSAGE_MAP()
 
-//поток, ждущий Текста
-DWORD WINAPI WhaitForText(PVOID param) {	
-	HANDLE message = OpenEventW(EVENT_ALL_ACCESS, FALSE, LPCWSTR("SIMB"));
-	Info* inf = (Info*)param;
-
-	if (!inf->IsMain) {
-
-		for (;;) {
-			if (inf->IsMain)
-				return 0;
-
-			WaitForSingleObject(message, INFINITE);
-
-			CString buf;
-			inf->txt->GetWindowTextW(buf);
-			buf += (WCHAR)"*";
-			inf->txt->SetWindowTextW(buf);
-		}
-	}
-	return 0;
-}
-
 	
-//поток, ждущий закрытия процесса
-DWORD WINAPI WhaitForExit(PVOID param) {
-	HANDLE message = OpenEventW(EVENT_ALL_ACCESS, FALSE, LPCWSTR("CUR"));
+//поток, ждущий сообщений
+DWORD WINAPI WhaitFor(PVOID param) {	
 	Info* inf = (Info*)param;
-
-	if (message == NULL) {
-		SECURITY_DESCRIPTOR sd;
-		SECURITY_ATTRIBUTES sa;
-		InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-		SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
-
-		sa.nLength = sizeof(sa);
-		sa.lpSecurityDescriptor = &sd;
-		
-		inf->IsMain = true;
-
-		//событие Главное окно
-		CreateEvent(&sa, FALSE, FALSE, LPCWSTR("CUR"));
-		//событие передачи символа
-		CreateEvent(&sa, TRUE, FALSE, LPCWSTR("SIMB"));
-	}
-	else {
-
-		inf->txt->SetReadOnly(TRUE);
-		WaitForSingleObject(message, INFINITE);
-		inf->IsMain = true;
-		inf->txt->SetReadOnly(FALSE);
-	}
-
-	return 0;
+	HANDLE mas[2] = { inf->mes, inf->syn };
+	
+	for (;;) {
+		if (!inf->IsMain) {			
+			DWORD id = WaitForMultipleObjects(2, mas, FALSE, INFINITE);
+						
+			//обработчик изменения текста
+			if (id == 0) {
+				//MessageBoxW(NULL, (LPCTSTR)"1", NULL, NULL);
+				CString* str = (CString*)MapViewOfFile(inf->mem, FILE_MAP_ALL_ACCESS, 0, 0, 1024);
+				//MessageBoxW(NULL, (LPCTSTR)str, NULL,NULL);
+				inf->txt->SetWindowTextW((LPCTSTR)str);
+			}
+			//обработчик закрытия главного окна
+			if(id == 1) {				
+				inf->IsMain = true;
+				inf->txt->SetReadOnly(FALSE);
+			}
+		}
+		else {			
+			return 0;
+		}			
+	}	
 }
 
 // Обработчики сообщений CsynchronizationThreadsDlg
@@ -161,12 +135,36 @@ BOOL CsynchronizationThreadsDlg::OnInitDialog()
 	inf.IsMain = false;
 	inf.txt = &Text;
 
+	//хэндл синхронизации 
+	inf.syn = OpenEventW(EVENT_ALL_ACCESS, FALSE, LPWSTR("CUR"));
 
-	CreateThread(NULL, NULL, WhaitForExit, &inf, 0, NULL);
-	CreateThread(NULL, NULL, WhaitForText, &inf, 0, NULL);
+	//хэндл сообщения 
+	inf.mes = OpenEventW(EVENT_ALL_ACCESS, FALSE, LPWSTR("SIMB"));
+
+	//хэндл памяти
+	inf.mem = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, LPWSTR("Mem"));
+	inf.txt->SetReadOnly(TRUE);
+
+	if (inf.syn == NULL) {
+		//синхронизация
+		inf.syn = CreateEvent(NULL, FALSE, FALSE, LPWSTR("CUR"));
+		//сообщения 
+		inf.mes = CreateEvent(NULL, TRUE, FALSE, LPWSTR("SIMB"));
+		//память
+		inf.mem = CreateFileMapping(
+			INVALID_HANDLE_VALUE,
+			NULL,
+			PAGE_READWRITE,
+			0,
+			1024,
+			LPWSTR("Mem")
+		);
+		inf.IsMain = true;
+		inf.txt->SetReadOnly(FALSE);
+	}
+
+	CreateThread(NULL, NULL, WhaitFor, &inf, 0, NULL);
 	
-
-
 	return TRUE;  // возврат значения TRUE, если фокус не передан элементу управления
 }
 
@@ -223,6 +221,7 @@ HCURSOR CsynchronizationThreadsDlg::OnQueryDragIcon()
 //кнопка выхода
 void CsynchronizationThreadsDlg::OnBnClickedCancel()
 {	
+	
 	SetEvent(OpenEventW(EVENT_ALL_ACCESS, FALSE, LPCWSTR("CUR")));
 	CDialogEx::OnCancel();
 }
@@ -241,9 +240,14 @@ void CsynchronizationThreadsDlg::OnBnClickedCancel2()
 void CsynchronizationThreadsDlg::OnEnChangeEdit1()
 {	
 	if (inf.IsMain) {
-		HANDLE message = OpenEventW(EVENT_ALL_ACCESS, FALSE, LPCWSTR("SIMB"));
-		if (message != NULL)
-			PulseEvent(message);
+		CString buf;
+		Text.GetWindowTextW(buf);
+		
+		CString* str = (CString*)MapViewOfFile(inf.mem, FILE_MAP_ALL_ACCESS, 0, 0, 1024);
+		CopyMemory((PVOID)str, buf,1024);
+				
+		if (inf.mes != NULL) 
+			PulseEvent(inf.mes);			
 	}
 	
 }

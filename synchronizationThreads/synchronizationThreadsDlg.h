@@ -6,6 +6,10 @@
 struct Info {
 	CEdit* txt;
 	bool IsMain;
+	HANDLE
+		mem,
+		mes,
+		syn;
 };
 
 // Диалоговое окно CsynchronizationThreadsDlg
